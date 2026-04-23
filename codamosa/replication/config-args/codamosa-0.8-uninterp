@@ -1,0 +1,1 @@
+--model_name cgpt-3.5-turbo-instruct --include-partially-parsable True --allow-expandable-cluster True --algorithm CODAMOSA --temperature 0.8 --uninterpreted_statements ONLY

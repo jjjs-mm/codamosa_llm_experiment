@@ -1,0 +1,12 @@
+# 忽略所有的压缩包
+*.tar
+*.zip
+*.gz
+
+# 忽略 Python 虚拟环境
+venv/
+.env/
+__pycache__/
+
+# 忽略 Pynguin 生成的临时统计数据
+codamosa/test_output/

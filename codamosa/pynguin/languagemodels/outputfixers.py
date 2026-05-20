@@ -566,14 +566,22 @@ class StmtRewriter(ast.NodeTransformer):
         return node
 
     def visit_With(self, node):
+        # [课题修改] 允许 with unittest.mock.patch(...) 结构存活
         node.body = self.visit_block_helper(node.body)
         return node
 
     def visit_Try(self, node: ast.Try):
+        # [课题修改] 允许 try...except 结构存活，并修复原版 AST 漏掉 handlers 的严重 Bug
         node.body = self.visit_block_helper(node.body)
+        
+        # CRITICAL FIX: 必须遍历 except 块里面的代码，否则 except 会被框架丢弃！
+        for handler in node.handlers:
+            handler.body = self.visit_block_helper(handler.body)
+            
         node.orelse = self.visit_block_helper(node.orelse)
         node.finalbody = self.visit_block_helper(node.finalbody)
         return node
+
 
     def visit_Lambda(self, node: ast.Lambda):
         self.enter_new_bound_scope()

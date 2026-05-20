@@ -293,7 +293,23 @@ class _OpenAILanguageModel:
         url = "https://api.deepseek.com/chat/completions"
 
         # 2. 转换成现代大模型接受的 Messages 格式
-        system_prompt = "You are a code editor. Fill in the `??` in the following code. Return ONLY the completed code. Do NOT wrap the code in markdown blocks (e.g., ```python), just return the raw text."
+        system_prompt = """You are an expert Python software tester and program analyzer. Your task is to complete the `??` placeholder in the test code.
+You MUST perform a deep symbolic execution and state analysis using the following reasoning operators BEFORE writing any code. Keep your reasoning strictly concise.
+
+<Signature_Enforce>: Explicitly state the strictly required arguments.
+<Automation_Bypass>: CRITICAL! The execution framework CANNOT handle Mock objects, interactive prompts, `try...except` blocks, or Keyword Arguments (kwargs). 
+To bypass human interaction in `prompt_and_delete`, you MUST pass the automation flag (e.g., True for `no_input`) strictly as a POSITIONAL argument. (e.g., `func(path, True)` instead of `func(path, no_input=True)`).
+<Edge_Case_Forcing>: Construct edge inputs to trigger different branches. Generate ONLY pure, flat, linear code. NEVER use `try...except`. If it crashes, the framework will handle it natively.
+<Code>: Output EXACTLY the pure Python code to replace `??`. NO markdown.
+
+Example Reasoning:
+<Signature_Enforce> `prompt_and_delete` requires `repo_dir` and optionally `no_input`. </Signature_Enforce>
+<Automation_Bypass> I will pass `True` as the second positional argument to silently bypass the prompt. I cannot use `no_input=True`. </Automation_Bypass>
+<Edge_Case_Forcing> I will pass an invalid dictionary path. I will NOT use try-except. </Edge_Case_Forcing>
+<Code>
+module_0.prompt_and_delete({"invalid": "data"}, True)
+</Code>
+"""
         user_prompt = f"{context}\n\nCode to complete:\n{function_to_mutate}"
 
         payload = {
@@ -348,19 +364,46 @@ class _OpenAILanguageModel:
         # ====== [核心修正：强行拦截并转换 Payload 格式] ======
         if "prompt" in payload:
             original_prompt = payload.pop("prompt")
+            
+            # --- [V8 终极版：线性传参，降维打击] ---
+            system_prompt = """You are an expert Python software tester and program analyzer. Your task is to complete the `??` placeholder in the test code.
+You MUST perform a deep symbolic execution and state analysis using the following reasoning operators BEFORE writing any code. Keep your reasoning strictly concise.
+
+<Signature_Enforce>: Explicitly state the strictly required arguments.
+<Automation_Bypass>: CRITICAL! The execution framework CANNOT handle Mock objects, interactive prompts, `try...except` blocks, or Keyword Arguments (kwargs). 
+To bypass human interaction in `prompt_and_delete`, you MUST pass the automation flag (e.g., True for `no_input`) strictly as a POSITIONAL argument. (e.g., `func(path, True)` instead of `func(path, no_input=True)`).
+<Edge_Case_Forcing>: Construct edge inputs to trigger different branches. Generate ONLY pure, flat, linear code. NEVER use `try...except`. If it crashes, the framework will handle it natively.
+<Code>: Output EXACTLY the pure Python code to replace `??`. NO markdown.
+
+Example Reasoning:
+<Signature_Enforce> `prompt_and_delete` requires `repo_dir` and optionally `no_input`. </Signature_Enforce>
+<Automation_Bypass> I will pass `True` as the second positional argument to silently bypass the prompt. I cannot use `no_input=True`. </Automation_Bypass>
+<Edge_Case_Forcing> I will pass an invalid dictionary path. I will NOT use try-except. </Edge_Case_Forcing>
+<Code>
+module_0.prompt_and_delete({"invalid": "data"}, True)
+</Code>
+"""
+            
             payload["messages"] = [
-                {"role": "user", "content": original_prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "Here is the code to complete:\n" + original_prompt}
             ]
         payload["model"] = "deepseek-chat"
         # ==================================================
 
         time_start = time.time()
         
-        # [绝对防御代码]
+        # [绝对防御代码：加入 timeout 防止死锁卡死]
         import requests
         session = requests.Session()
         session.trust_env = False  
-        res = session.post(url, data=json.dumps(payload), headers=headers, verify=False) 
+        
+        try:
+            # 增加了 timeout=60，服务器60秒不回话就强行切断，防止挂起！
+            res = session.post(url, data=json.dumps(payload), headers=headers, verify=False, timeout=60) 
+        except Exception as e:
+            logger.error("API Timeout or Network Error: %s", e)
+            return ""
         
         self.time_calling_codex += time.time() - time_start
         self.num_codex_calls += 1
@@ -393,8 +436,17 @@ class _OpenAILanguageModel:
         if result_text is None:
             result_text = ""
 
-        # 2. 清洗代码：暴力提取纯 Python 代码（绝对防爆版）
-        if "```" in result_text:
+        # 2. 清洗代码：双引擎提取
+        
+        # 引擎 A：优先拦截你设计的 <Code> 算子标签
+        if "<Code>" in result_text and "</Code>" in result_text:
+            result_text = result_text.split("<Code>")[1].split("</Code>")[0].strip()
+            # 注意这里，所有的 replace 都在同一行，绝对不能回车换行！
+            result_text = result_text.replace("```python", "").replace("```Python", "").replace("```", "").strip()
+            
+        # 引擎 B：如果模型没用标签，回退到 Markdown 暴力防爆版
+        elif "```" in result_text:
+            # 这里也修复了，"```" 必须在同一行
             parts = result_text.split("```")
             if len(parts) >= 3:
                 code_block = parts[1]
@@ -403,8 +455,7 @@ class _OpenAILanguageModel:
                 result_text = code_block.strip("\n\r")
             else:
                 result_text = result_text.replace("```", "").replace("python", "").replace("Python", "")
-
-        # ！！就是这句救命的 return，刚才被我搞丢了！！
+                
         return result_text
 
     def _get_num_tokens_at_line(self, line_num: int) -> int:
